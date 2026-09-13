@@ -5,3 +5,27 @@ services:
       - "8000:8000"
     env_file:
       - .env
+    environment:
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  redis:
+    # Redis 8+ bundles the RediSearch/RedisJSON modules that
+    # langgraph-checkpoint-redis needs to index conversation checkpoints.
+    # Plain redis:7 (or the -alpine variant without these modules) will not
+    # work here.
+    image: redis:8
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  redis-data:

@@ -13,6 +13,8 @@ class Settings(BaseSettings):
 
     aviationweather_base_url: str = "https://aviationweather.gov/api/data"
 
+    redis_url: str = "redis://localhost:6379"
+
     app_host: str = "0.0.0.0"
     app_port: int = 8000
 

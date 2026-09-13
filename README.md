@@ -11,7 +11,7 @@ decoding the raw report for the user.
 - `POST /api/chat` — single request/response chat.
 - `POST /api/chat/stream` — Server-Sent Events streaming chat.
 - LangChain tool-calling agent with `get_metar` / `get_taf` tools.
-- Per-session in-memory conversation history (`session_id`).
+- Per-session conversation history (`session_id`), persisted in Redis.
 
 ## Local setup (Python virtual environment)
 
@@ -22,6 +22,11 @@ pip install -r requirements-dev.txt
 copy .env.example .env
 # edit .env and set OPENAI_API_KEY
 ```
+
+You also need a Redis 8+ (or Redis Stack) instance for conversation memory
+— plain old Redis without the RediSearch/RedisJSON modules will not work.
+`REDIS_URL` in `.env` defaults to `redis://localhost:6379`; the quickest way
+to get one locally is `docker compose up -d redis`.
 
 Run the dev server:
 
@@ -36,6 +41,12 @@ pytest
 ```
 
 ## Example requests
+
+`session_id` is optional — omit it to start a new conversation; the API
+generates a GUID and returns it (as `session_id` in the JSON response for
+`/api/chat`, or as the first `{"session_id": ...}` SSE event for
+`/api/chat/stream`). Pass it back on later requests to continue that
+conversation.
 
 Non-streaming:
 
@@ -57,12 +68,15 @@ curl -N -X POST http://localhost:8000/api/chat/stream \
 docker compose up --build
 ```
 
-The API will be available at `http://localhost:8000`. Environment variables
-are read from `.env` (see `.env.example`).
+This also starts a `redis:8` container that the API depends on for
+conversation memory. The API will be available at `http://localhost:8000`.
+Environment variables are read from `.env` (see `.env.example`); when run
+via compose, `REDIS_URL` is overridden to point at the `redis` service.
 
 ## Notes / limitations
 
 - Airport-name-to-ICAO resolution relies on the LLM's own knowledge (set in
   the system prompt in `app/agent.py`); it is not backed by a lookup table.
-- Conversation history is kept in-memory per process and is lost on
-  restart — fine for a demo/student project, not for production.
+- Conversation history is persisted in Redis (via
+  `langgraph-checkpoint-redis`) and survives process restarts, keyed by
+  `session_id`.

@@ -1,9 +1,12 @@
 """FastAPI application entrypoint."""
 
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 
+from app.agent import close_checkpointer, init_checkpointer
 from app.api.routes import router
 
 tags_metadata = [
@@ -12,6 +15,14 @@ tags_metadata = [
         "description": "LLM chat endpoints for asking about METAR/TAF weather reports.",
     },
 ]
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    await init_checkpointer()
+    yield
+    await close_checkpointer()
+
 
 app = FastAPI(
     title="Aviation METAR/TAF Chat API",
@@ -24,6 +35,7 @@ app = FastAPI(
     openapi_tags=tags_metadata,
     docs_url="/docs",
     redoc_url="/redoc",
+    lifespan=lifespan,
 )
 
 app.add_middleware(

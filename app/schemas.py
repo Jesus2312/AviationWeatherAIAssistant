@@ -5,9 +5,14 @@ from pydantic import BaseModel, Field
 
 class ChatRequest(BaseModel):
     message: str = Field(..., description="The user's chat message.")
-    session_id: str = Field(
-        default="default",
-        description="Conversation identifier used to keep per-session chat history.",
+    session_id: str | None = Field(
+        default=None,
+        description=(
+            "Conversation identifier used to keep per-session chat history. "
+            "Omit it to start a new conversation; the API generates a GUID "
+            "and returns it, which you should pass on subsequent requests "
+            "to continue that conversation."
+        ),
     )
 
 

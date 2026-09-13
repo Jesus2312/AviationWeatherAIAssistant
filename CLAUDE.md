@@ -21,6 +21,8 @@ explanation alongside the raw code.
 - **pydantic-settings** for config via environment variables / `.env`.
 - **pytest** + **respx** for tests (HTTP calls are mocked, never live).
 - **Docker** / **docker compose** for containerized runs.
+- **Redis** (via `langgraph-checkpoint-redis`) for persistent, cross-process
+  conversation memory.
 
 ## Architecture
 
@@ -29,9 +31,10 @@ app/
   main.py            FastAPI app, CORS, /health, mounts api router
   config.py           Settings (env vars, .env) via pydantic-settings
   schemas.py           ChatRequest / ChatResponse pydantic models
-  agent.py             Builds the LangChain tool-calling AgentExecutor,
-                       wraps it with RunnableWithMessageHistory for
-                       per-session memory (in-memory dict store)
+  agent.py             Builds the LangChain 1.x create_agent graph;
+                       per-session memory via a LangGraph AsyncRedisSaver
+                       checkpointer (thread_id == session_id), initialized
+                       in main.py's lifespan handler
   api/routes.py         POST /api/chat (non-streaming)
                        POST /api/chat/stream (SSE streaming)
   tools/aviation_weather.py   get_metar / get_taf LangChain @tool functions
@@ -53,11 +56,17 @@ tests/                 pytest tests; aviationweather.gov calls mocked with respx
   prompt tells the model to decode the raw report field by field. Don't add
   a manual METAR-parsing library unless asked — that would duplicate what
   the system prompt already asks the LLM to do.
-- **Conversation memory is in-memory only** (`_session_store` dict in
-  `app/agent.py`, keyed by `session_id`). It resets when the process
-  restarts and does not scale across multiple workers/instances. Treat this
-  as a demo-grade constraint; swapping in a persistent store
-  (Redis/Postgres) would be a deliberate follow-up, not an assumed default.
+- **Conversation memory is persisted in Redis** via a LangGraph
+  `AsyncRedisSaver` checkpointer (`app/agent.py`), keyed by `thread_id` ==
+  `session_id`. It survives process restarts and is shared across
+  workers/instances that point at the same Redis. The checkpointer is
+  opened once in `app/main.py`'s lifespan handler (`init_checkpointer` /
+  `close_checkpointer`) rather than per-request; `build_agent()` raises if
+  called before startup has run. Requires Redis 8+ (or Redis Stack) because
+  `langgraph-checkpoint-redis` indexes checkpoints with RediSearch/RedisJSON
+  — plain old Redis without those modules will not work. Configured via
+  `REDIS_URL` (`app/config.py`); `docker-compose.yml` runs a `redis:8`
+  service as a dependency of `api`.
 - **Streaming** is implemented with `agent.astream_events(..., version="v2")`
   in `app/api/routes.py`, filtering for `on_chat_model_stream` events and
   forwarding non-empty `chunk.content` as SSE `data:` lines. Tool-call
