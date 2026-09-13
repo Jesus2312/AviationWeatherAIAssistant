@@ -12,6 +12,9 @@ from langchain.agents import create_agent
 from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.redis.aio import AsyncRedisSaver
 
+from langfuse import get_client as get_langfuse_client
+from langfuse.langchain import CallbackHandler
+
 from app.config import get_settings
 from app.tools.aviation_weather import get_metar, get_taf
 
@@ -21,8 +24,10 @@ TAF forecasts.
 
 When a user names an airport (by name, city, or code), first determine its \
 4-letter ICAO identifier using your own aviation knowledge (e.g. "El Paso \
-International Airport" -> "KELP", "JFK" -> "KJFK"). If you are not confident \
-of the ICAO code, ask the user to confirm or provide it.
+International Airport" -> "KELP", "JFK" -> "KJFK").
+
+If no ICAO code found on user request, please ask user to provide it and confirm it. \
+Do not Invent ICAO codes. \
 
 Use the get_metar tool for current conditions and the get_taf tool for \
 forecasts. Never guess weather data yourself -- always call the appropriate \
@@ -45,6 +50,11 @@ _TOOLS = [get_metar, get_taf]
 _checkpointer: AsyncRedisSaver | None = None
 _checkpointer_stack: AsyncExitStack | None = None
 
+# Lazily created on first use, shared across requests: the langfuse
+# LangChain callback handler. It reads LANGFUSE_SECRET_KEY/PUBLIC_KEY/
+# BASE_URL from the environment on first construction (see app.config).
+_langfuse_handler: CallbackHandler | None = None
+
 
 async def init_checkpointer() -> None:
     """Open the Redis connection and create indices. Call once at startup."""
@@ -65,6 +75,24 @@ async def close_checkpointer() -> None:
         await _checkpointer_stack.aclose()
     _checkpointer = None
     _checkpointer_stack = None
+
+
+def get_langfuse_callbacks() -> list:
+    """Return `[handler]` for use as a per-request `config["callbacks"]`,
+    or `[]` if Langfuse isn't configured (no keys set)."""
+    global _langfuse_handler
+    settings = get_settings()
+    if not settings.langfuse_enabled:
+        return []
+    if _langfuse_handler is None:
+        _langfuse_handler = CallbackHandler()
+    return [_langfuse_handler]
+
+
+def flush_langfuse() -> None:
+    """Flush any pending Langfuse trace exports. Call on app shutdown."""
+    if _langfuse_handler is not None:
+        get_langfuse_client().flush()
 
 
 def build_agent():

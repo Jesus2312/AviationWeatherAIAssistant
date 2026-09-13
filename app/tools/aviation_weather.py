@@ -29,17 +29,21 @@ async def get_metar(icao: str) -> str:
     url = f"{settings.aviationweather_base_url}/metar"
     params = {"ids": icao.strip().upper(), "format": "json"}
 
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        response = await client.get(url, params=params)
-        response.raise_for_status()
-        data = response.json()
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.get(url, params=params)
+                response.raise_for_status()
+                data = response.json()
+        
+        if not data:
+                return (
+                    f"No METAR data found for ICAO code '{icao.strip().upper()}'. "
+                    "Double-check the airport identifier."
+                )
 
-    if not data:
-        return (
-            f"No METAR data found for ICAO code '{icao.strip().upper()}'. "
-            "Double-check the airport identifier."
-        )
-    return json.dumps(data, indent=2)
+        return json.dumps(data, indent=2)        
+    except Exception as e:
+        return f"Error fetching METAR data: {e}"    
 
 
 @tool

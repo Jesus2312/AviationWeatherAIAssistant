@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 
-from app.agent import close_checkpointer, init_checkpointer
+from app.agent import close_checkpointer, flush_langfuse, init_checkpointer
 from app.api.routes import router
 
 tags_metadata = [
@@ -21,6 +21,7 @@ tags_metadata = [
 async def lifespan(app: FastAPI):
     await init_checkpointer()
     yield
+    flush_langfuse()
     await close_checkpointer()
 
 

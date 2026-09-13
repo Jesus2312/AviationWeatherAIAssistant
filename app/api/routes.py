@@ -6,7 +6,7 @@ import uuid
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 
-from app.agent import build_agent
+from app.agent import build_agent, get_langfuse_callbacks
 from app.schemas import ChatRequest, ChatResponse
 
 router = APIRouter(tags=["chat"])
@@ -26,7 +26,11 @@ router = APIRouter(tags=["chat"])
 async def chat(request: ChatRequest) -> ChatResponse:
     session_id = request.session_id or str(uuid.uuid4())
     agent = build_agent()
-    config = {"configurable": {"thread_id": session_id}}
+    config = {
+        "configurable": {"thread_id": session_id},
+        "callbacks": get_langfuse_callbacks(),
+        "metadata": {"langfuse_session_id": session_id},
+    }
     result = await agent.ainvoke(
         {"messages": [{"role": "user", "content": request.message}]},
         config=config,
@@ -56,7 +60,11 @@ async def chat(request: ChatRequest) -> ChatResponse:
 async def chat_stream(request: ChatRequest) -> StreamingResponse:
     session_id = request.session_id or str(uuid.uuid4())
     agent = build_agent()
-    config = {"configurable": {"thread_id": session_id}}
+    config = {
+        "configurable": {"thread_id": session_id},
+        "callbacks": get_langfuse_callbacks(),
+        "metadata": {"langfuse_session_id": session_id},
+    }
 
     async def event_generator():
         yield f"data: {json.dumps({'session_id': session_id})}\n\n"
