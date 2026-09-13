@@ -11,7 +11,41 @@ import json
 import httpx
 from langchain_core.tools import tool
 
+from app.circuit_breaker import CircuitBreaker, CircuitBreakerOpenError
 from app.config import get_settings
+
+_settings = get_settings()
+_breaker = CircuitBreaker(
+    "aviationweather.gov",
+    failure_threshold=_settings.circuit_breaker_failure_threshold,
+    reset_timeout=_settings.circuit_breaker_reset_timeout,
+)
+
+def get_breaker_state() -> str:
+    """Current state of the aviationweather.gov circuit breaker (for /health)."""
+    return _breaker.state
+
+
+_UNAVAILABLE_MESSAGE = (
+    "The aviationweather.gov service appears to be down right now (too many "
+    "recent failures), so this tool is temporarily disabled to avoid hanging. "
+    "Tell the user the weather service is unavailable and to try again in a "
+    "little while."
+)
+
+
+async def _fetch(report_type: str, icao: str) -> list:
+    settings = get_settings()
+    url = f"{settings.aviationweather_base_url}/{report_type}"
+    params = {"ids": icao.strip().upper(), "format": "json"}
+
+    async def _get() -> list:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(url, params=params)
+            response.raise_for_status()
+            return response.json()
+
+    return await _breaker.call(_get)
 
 
 @tool
@@ -25,25 +59,19 @@ async def get_metar(icao: str) -> str:
     Returns the raw JSON from aviationweather.gov. The 'rawOb' field contains
     the raw METAR text that must be decoded for the user.
     """
-    settings = get_settings()
-    url = f"{settings.aviationweather_base_url}/metar"
-    params = {"ids": icao.strip().upper(), "format": "json"}
-
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-                response = await client.get(url, params=params)
-                response.raise_for_status()
-                data = response.json()
-        
-        if not data:
-                return (
-                    f"No METAR data found for ICAO code '{icao.strip().upper()}'. "
-                    "Double-check the airport identifier."
-                )
-
-        return json.dumps(data, indent=2)        
+        data = await _fetch("metar", icao)
+    except CircuitBreakerOpenError:
+        return _UNAVAILABLE_MESSAGE
     except Exception as e:
-        return f"Error fetching METAR data: {e}"    
+        return f"Error fetching METAR data: {e}"
+
+    if not data:
+        return (
+            f"No METAR data found for ICAO code '{icao.strip().upper()}'. "
+            "Double-check the airport identifier."
+        )
+    return json.dumps(data, indent=2)
 
 
 @tool
@@ -57,14 +85,12 @@ async def get_taf(icao: str) -> str:
     Returns the raw JSON from aviationweather.gov. The 'rawTAF' field contains
     the raw TAF text that must be decoded for the user.
     """
-    settings = get_settings()
-    url = f"{settings.aviationweather_base_url}/taf"
-    params = {"ids": icao.strip().upper(), "format": "json"}
-
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        response = await client.get(url, params=params)
-        response.raise_for_status()
-        data = response.json()
+    try:
+        data = await _fetch("taf", icao)
+    except CircuitBreakerOpenError:
+        return _UNAVAILABLE_MESSAGE
+    except Exception as e:
+        return f"Error fetching TAF data: {e}"
 
     if not data:
         return (

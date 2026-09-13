@@ -19,3 +19,12 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     answer: str
     session_id: str
+    trace_id: str = Field(
+        description="Unique identifier for this request/response, usable to "
+        "look up its full trace (LLM calls, tool calls, timing) in Langfuse.",
+    )
+    trace_url: str | None = Field(
+        default=None,
+        description="Direct link to this request's trace in Langfuse, or "
+        "null if Langfuse isn't configured.",
+    )

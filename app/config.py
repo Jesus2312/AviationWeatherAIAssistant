@@ -25,6 +25,12 @@ class Settings(BaseSettings):
     langfuse_public_key: str = ""
     langfuse_base_url: str = "https://cloud.langfuse.com"
 
+    # Circuit breaker for calls to aviationweather.gov and the LLM provider:
+    # trip open after this many consecutive failures, then fail fast for
+    # this many seconds before testing recovery with a single trial call.
+    circuit_breaker_failure_threshold: int = 5
+    circuit_breaker_reset_timeout: float = 30.0
+
     app_host: str = "0.0.0.0"
     app_port: int = 8000
 

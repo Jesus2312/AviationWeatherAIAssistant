@@ -6,8 +6,15 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 
-from app.agent import close_checkpointer, flush_langfuse, init_checkpointer
+from app.agent import (
+    close_checkpointer,
+    close_llm_http_client,
+    flush_langfuse,
+    get_llm_breaker_state,
+    init_checkpointer,
+)
 from app.api.routes import router
+from app.tools.aviation_weather import get_breaker_state as get_weather_breaker_state
 
 tags_metadata = [
     {
@@ -23,6 +30,7 @@ async def lifespan(app: FastAPI):
     yield
     flush_langfuse()
     await close_checkpointer()
+    await close_llm_http_client()
 
 
 app = FastAPI(
@@ -56,4 +64,10 @@ async def root() -> RedirectResponse:
 
 @app.get("/health", tags=["health"], summary="Health check")
 async def health() -> dict:
-    return {"status": "ok"}
+    return {
+        "status": "ok",
+        "circuit_breakers": {
+            "aviationweather.gov": get_weather_breaker_state(),
+            "llm_provider": get_llm_breaker_state(),
+        },
+    }

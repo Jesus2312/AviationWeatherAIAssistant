@@ -23,6 +23,8 @@ explanation alongside the raw code.
 - **Docker** / **docker compose** for containerized runs.
 - **Redis** (via `langgraph-checkpoint-redis`) for persistent, cross-process
   conversation memory.
+- **Langfuse** (`langfuse`) for per-request LLM/tool call tracing, optional
+  (no-ops if unconfigured).
 
 ## Architecture
 
@@ -38,6 +40,9 @@ app/
   api/routes.py         POST /api/chat (non-streaming)
                        POST /api/chat/stream (SSE streaming)
   tools/aviation_weather.py   get_metar / get_taf LangChain @tool functions
+  circuit_breaker.py    CircuitBreaker + CircuitBreakerTransport (httpx),
+                       shared by the aviationweather.gov tools and the LLM
+                       provider client
 tests/                 pytest tests; aviationweather.gov calls mocked with respx
 ```
 
@@ -67,15 +72,46 @@ tests/                 pytest tests; aviationweather.gov calls mocked with respx
   — plain old Redis without those modules will not work. Configured via
   `REDIS_URL` (`app/config.py`); `docker-compose.yml` runs a `redis:8`
   service as a dependency of `api`.
-- **Streaming** is implemented with `agent.astream_events(..., version="v2")`
-  in `app/api/routes.py`, filtering for `on_chat_model_stream` events and
-  forwarding non-empty `chunk.content` as SSE `data:` lines. Tool-call
-  argument deltas are excluded automatically since those chunks have empty
-  `content`.
-- **LLM provider**: only OpenAI via `langchain-openai` `ChatOpenAI` is wired
-  up (`OPENAI_API_KEY`, `OPENAI_MODEL` in `.env`). If another provider is
-  ever needed, swap the `ChatOpenAI` construction in
-  `app/agent.py:build_agent_executor`.
+- **Streaming** is implemented with `agent.astream(..., stream_mode="messages")`
+  in `app/api/routes.py`, forwarding non-empty `chunk.content` as SSE
+  `data:` lines. Tool-call argument deltas are excluded automatically since
+  those chunks have empty `content`.
+- **LLM provider**: only OpenAI-compatible via `langchain-openai`
+  `ChatOpenAI` is wired up (`OPENAI_API_KEY`, `OPENAI_MODEL`,
+  `OPENAI_API_BASE` in `.env`). If another provider is ever needed, swap the
+  `ChatOpenAI` construction in `app/agent.py:build_agent`.
+- **Circuit breakers** (`app/circuit_breaker.py`) guard both external
+  dependencies so an outage fails fast instead of piling up hung requests:
+  one wraps the aviationweather.gov tool calls (`app/tools/aviation_weather.py`),
+  the other wraps every LLM provider call via a shared `httpx.AsyncClient`
+  passed as `ChatOpenAI(http_async_client=...)` in `app/agent.py` — this
+  covers `ainvoke`/`astream`/tool-calling round trips regardless of which
+  LangGraph code path triggers them, since they all funnel through that one
+  HTTP transport. Tripped state is surfaced at `GET /health` and via
+  `CircuitBreakerOpenError` → HTTP 503 (or an `{"error": ...}` SSE event for
+  `/chat/stream`) in `app/api/routes.py`. Tunable via
+  `CIRCUIT_BREAKER_FAILURE_THRESHOLD` / `CIRCUIT_BREAKER_RESET_TIMEOUT`.
+- **Request tracing** (`app/agent.py:trace_request`) opens one root Langfuse
+  span per HTTP request — covering arrival at the route handler through to
+  the response — via `Langfuse.start_as_current_observation` with an
+  explicitly generated `trace_id`. Both `/chat` and `/chat/stream`
+  (`app/api/routes.py`) wrap their whole body in `with trace_request(...) as
+  trace:` and pass `trace.callbacks` into the agent's `config["callbacks"]`;
+  every LLM generation and tool call the request triggers nests under that
+  span, so e.g. the aviationweather.gov call's latency and each LLM call's
+  latency show up as separate child observations under one `trace_id` in
+  Langfuse. The `trace_id`/`trace_url` are returned to the caller (JSON body
+  for `/chat`, first SSE event for `/chat/stream`) as the request's
+  correlation id. **Important**: the LangChain `CallbackHandler` is
+  constructed with an explicit `trace_context={"trace_id":...,
+  "parent_span_id": span.id}` rather than relying on ambient OTel context —
+  LangGraph's async execution doesn't reliably propagate that context, a
+  known langfuse/langgraph limitation (verified live before landing this;
+  don't "simplify" it back to ambient-context propagation). No-ops entirely
+  (empty callbacks, `trace.span is None`) when Langfuse isn't configured.
+  The streaming endpoint opens the span *inside* `event_generator()`, not in
+  the route body — the generator outlives the route function's return, so
+  opening it outside would close the span before streaming even starts.
 
 ## Running things
 
@@ -98,3 +134,8 @@ Docker: `docker compose up --build` (reads `.env`).
   as in `tests/test_aviation_weather.py`.
 - New LangChain tools go in `app/tools/`, one module per external API, and
   get added to the `_TOOLS` list in `app/agent.py`.
+- Any new outbound call to an external service that the app depends on at
+  request time should go through a `CircuitBreaker` (see
+  `app/circuit_breaker.py`), the same way the aviationweather.gov tools and
+  the LLM client do — don't let a new dependency reintroduce the
+  hung-request problem the breakers exist to prevent.

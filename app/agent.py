@@ -6,8 +6,11 @@ Redis checkpointer, keyed by `thread_id` (== our `session_id`), so history
 survives process restarts and is shared across workers/instances.
 """
 
-from contextlib import AsyncExitStack
+import uuid
+from contextlib import AsyncExitStack, contextmanager
+from typing import Any, Iterator, NamedTuple
 
+import httpx
 from langchain.agents import create_agent
 from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.redis.aio import AsyncRedisSaver
@@ -15,6 +18,7 @@ from langgraph.checkpoint.redis.aio import AsyncRedisSaver
 from langfuse import get_client as get_langfuse_client
 from langfuse.langchain import CallbackHandler
 
+from app.circuit_breaker import CircuitBreaker, CircuitBreakerTransport
 from app.config import get_settings
 from app.tools.aviation_weather import get_metar, get_taf
 
@@ -50,10 +54,31 @@ _TOOLS = [get_metar, get_taf]
 _checkpointer: AsyncRedisSaver | None = None
 _checkpointer_stack: AsyncExitStack | None = None
 
-# Lazily created on first use, shared across requests: the langfuse
-# LangChain callback handler. It reads LANGFUSE_SECRET_KEY/PUBLIC_KEY/
-# BASE_URL from the environment on first construction (see app.config).
-_langfuse_handler: CallbackHandler | None = None
+# Circuit breaker for the LLM provider, wired in via a shared httpx client
+# so every call the OpenAI SDK makes -- ainvoke, astream, tool-calling
+# round trips -- goes through it regardless of which LangGraph code path
+# triggers it. Module-level/shared so the connection pool is reused across
+# requests and the breaker's failure count is process-wide, not per-call.
+_settings = get_settings()
+_llm_breaker = CircuitBreaker(
+    "llm-provider",
+    failure_threshold=_settings.circuit_breaker_failure_threshold,
+    reset_timeout=_settings.circuit_breaker_reset_timeout,
+)
+_llm_http_client = httpx.AsyncClient(
+    transport=CircuitBreakerTransport(_llm_breaker),
+    timeout=30.0,
+)
+
+
+async def close_llm_http_client() -> None:
+    """Close the shared LLM HTTP client. Call once at shutdown."""
+    await _llm_http_client.aclose()
+
+
+def get_llm_breaker_state() -> str:
+    """Current state of the LLM provider circuit breaker (for /health)."""
+    return _llm_breaker.state
 
 
 async def init_checkpointer() -> None:
@@ -77,21 +102,66 @@ async def close_checkpointer() -> None:
     _checkpointer_stack = None
 
 
-def get_langfuse_callbacks() -> list:
-    """Return `[handler]` for use as a per-request `config["callbacks"]`,
-    or `[]` if Langfuse isn't configured (no keys set)."""
-    global _langfuse_handler
+class RequestTrace(NamedTuple):
+    """What a route needs to tie one HTTP request to one Langfuse trace."""
+
+    trace_id: str
+    trace_url: str | None
+    callbacks: list
+    span: Any | None  # langfuse._client.span.LangfuseSpan, or None if disabled
+
+
+@contextmanager
+def trace_request(
+    name: str, session_id: str, request_input: dict
+) -> Iterator[RequestTrace]:
+    """Open one root Langfuse span covering a single HTTP request end to
+    end -- from arrival at the route handler to the response being built.
+
+    Every LLM generation and tool call the request triggers (via
+    `config["callbacks"] = trace.callbacks` on the agent invocation) nests
+    under this span as a child, so the whole call tree -- including how
+    long the aviationweather.gov call and the LLM call each took -- shows
+    up under one `trace_id` in the Langfuse UI.
+
+    No-ops (yields a random id, no callbacks, no span) if Langfuse isn't
+    configured, so callers don't need to branch on `settings.langfuse_enabled`.
+    """
     settings = get_settings()
     if not settings.langfuse_enabled:
-        return []
-    if _langfuse_handler is None:
-        _langfuse_handler = CallbackHandler()
-    return [_langfuse_handler]
+        yield RequestTrace(trace_id=str(uuid.uuid4()), trace_url=None, callbacks=[], span=None)
+        return
+
+    client = get_langfuse_client()
+    trace_id = client.create_trace_id()
+    with client.start_as_current_observation(
+        trace_context={"trace_id": trace_id},
+        name=name,
+        as_type="span",
+        input=request_input,
+        metadata={"langfuse_session_id": session_id},
+    ) as span:
+        # Explicit trace_context (trace_id + parent_span_id) is required here:
+        # LangGraph's async execution doesn't reliably propagate the ambient
+        # OTel context set up by start_as_current_observation above (a known
+        # langfuse/langgraph limitation), so without this the model/tool
+        # spans below would land as a *separate* top-level trace instead of
+        # nesting under `span`.
+        handler = CallbackHandler(
+            trace_context={"trace_id": trace_id, "parent_span_id": span.id}
+        )
+        yield RequestTrace(
+            trace_id=trace_id,
+            trace_url=client.get_trace_url(trace_id=trace_id),
+            callbacks=[handler],
+            span=span,
+        )
 
 
 def flush_langfuse() -> None:
     """Flush any pending Langfuse trace exports. Call on app shutdown."""
-    if _langfuse_handler is not None:
+    settings = get_settings()
+    if settings.langfuse_enabled:
         get_langfuse_client().flush()
 
 
@@ -108,6 +178,7 @@ def build_agent():
         api_key=settings.openai_api_key,
         base_url=settings.openai_api_base or None,
         streaming=True,
+        http_async_client=_llm_http_client,
     )
     return create_agent(
         model=llm,
