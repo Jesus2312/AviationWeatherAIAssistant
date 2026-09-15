@@ -1,3 +1,17 @@
+import { getToken } from "./auth"
+
+export class UnauthorizedError extends Error {
+  constructor() {
+    super("Session expired. Please log in again.")
+    this.name = "UnauthorizedError"
+  }
+}
+
+function authHeaders(): Record<string, string> {
+  const token = getToken()
+  return token ? { Authorization: `Bearer ${token}` } : {}
+}
+
 export interface ChatRequestPayload {
   message: string
   session_id?: string | null
@@ -36,9 +50,10 @@ async function readErrorDetail(res: Response): Promise<string> {
 export async function sendChat(payload: ChatRequestPayload): Promise<ChatResponsePayload> {
   const res = await fetch(`${API_BASE}/api/chat`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...authHeaders() },
     body: JSON.stringify(payload),
   })
+  if (res.status === 401) throw new UnauthorizedError()
   if (!res.ok) {
     throw new Error(await readErrorDetail(res))
   }
@@ -57,10 +72,11 @@ export async function streamChat(
 ): Promise<void> {
   const res = await fetch(`${API_BASE}/api/chat/stream`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...authHeaders() },
     body: JSON.stringify(payload),
     signal,
   })
+  if (res.status === 401) throw new UnauthorizedError()
   if (!res.ok || !res.body) {
     throw new Error(await readErrorDetail(res))
   }

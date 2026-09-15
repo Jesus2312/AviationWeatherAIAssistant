@@ -4,11 +4,12 @@ import json
 import logging
 import uuid
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import AIMessageChunk
 
 from app.agent import build_agent, trace_request
+from app.auth import get_current_user
 from app.circuit_breaker import CircuitBreakerOpenError
 from app.schemas import ChatRequest, ChatResponse
 
@@ -33,7 +34,7 @@ _UNAVAILABLE_DETAIL = "The assistant is temporarily unavailable. Please try agai
         503: {"description": "The LLM provider is unavailable."},
     },
 )
-async def chat(request: ChatRequest) -> ChatResponse:
+async def chat(request: ChatRequest, user: str = Depends(get_current_user)) -> ChatResponse:
     session_id = request.session_id or str(uuid.uuid4())
     agent = build_agent()
 
@@ -97,7 +98,9 @@ async def chat(request: ChatRequest) -> ChatResponse:
         }
     },
 )
-async def chat_stream(request: ChatRequest) -> StreamingResponse:
+async def chat_stream(
+    request: ChatRequest, user: str = Depends(get_current_user)
+) -> StreamingResponse:
     session_id = request.session_id or str(uuid.uuid4())
     agent = build_agent()
 

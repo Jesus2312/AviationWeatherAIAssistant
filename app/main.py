@@ -14,6 +14,7 @@ from app.agent import (
     get_llm_breaker_state,
     init_checkpointer,
 )
+from app.api.auth_routes import router as auth_router
 from app.api.routes import router
 from app.tools.aviation_weather import get_breaker_state as get_weather_breaker_state
 
@@ -21,6 +22,10 @@ tags_metadata = [
     {
         "name": "chat",
         "description": "LLM chat endpoints for asking about METAR/TAF weather reports.",
+    },
+    {
+        "name": "auth",
+        "description": "Login endpoint issuing JWTs for the demo user.",
     },
 ]
 
@@ -55,6 +60,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(auth_router, prefix="/api")
 app.include_router(router, prefix="/api")
 
 

@@ -21,6 +21,15 @@ class Settings(BaseSettings):
 
     redis_url: str = "redis://localhost:6379"
 
+    # Demo-only single hardcoded user (see app/auth.py). Not meant to scale
+    # to multiple users -- swap for a real user store if that's ever needed.
+    demo_username: str = "admin"
+    demo_password: str = "admin"
+
+    jwt_secret_key: str = "insecure-demo-secret-change-me"
+    jwt_algorithm: str = "HS256"
+    jwt_access_token_expire_minutes: int = 60
+
     # langfuse_base_url is intentionally not declared here: the Langfuse SDK
     # reads LANGFUSE_BASE_URL straight from the process environment (see
     # load_dotenv() above), so a Settings field for it would just be dead

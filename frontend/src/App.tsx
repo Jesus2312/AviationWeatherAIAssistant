@@ -1,12 +1,15 @@
 import { useState } from "react"
-import { sendChat, streamChat } from "./api"
+import { UnauthorizedError, sendChat, streamChat } from "./api"
 import { ChatWindow } from "./components/ChatWindow"
 import { Composer } from "./components/Composer"
+import { Login } from "./components/Login"
 import { Sidebar } from "./components/Sidebar"
+import { useAuth } from "./hooks/useAuth"
 import { useConversations } from "./hooks/useConversations"
 import type { ChatMessage } from "./types"
 
 export default function App() {
+  const { isAuthenticated, login, logout } = useAuth()
   const {
     conversations,
     active,
@@ -77,6 +80,10 @@ export default function App() {
         })
       }
     } catch (err) {
+      if (err instanceof UnauthorizedError) {
+        logout()
+        return
+      }
       updateMessage(conversationId, assistantId, {
         pending: false,
         error: err instanceof Error ? err.message : "Something went wrong.",
@@ -84,6 +91,10 @@ export default function App() {
     } finally {
       setIsSending(false)
     }
+  }
+
+  if (!isAuthenticated) {
+    return <Login onLogin={login} />
   }
 
   return (
@@ -98,6 +109,9 @@ export default function App() {
       <main className="main-panel">
         <header className="main-header">
           <span>METAR/TAF Weather Assistant</span>
+          <button type="button" className="logout-button" onClick={logout}>
+            Log out
+          </button>
         </header>
         <div className="main-scroll">
           <ChatWindow conversation={active} onSuggestion={handleSend} />
