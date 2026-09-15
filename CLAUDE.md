@@ -44,6 +44,9 @@ app/
                        shared by the aviationweather.gov tools and the LLM
                        provider client
 tests/                 pytest tests; aviationweather.gov calls mocked with respx
+frontend/              React + TypeScript chat UI (chatgpt.com-style), talks
+                       to /api/chat and /api/chat/stream. See frontend/README.md
+                       and frontend/CLAUDE.md.
 ```
 
 ## Key design decisions
@@ -73,9 +76,15 @@ tests/                 pytest tests; aviationweather.gov calls mocked with respx
   `REDIS_URL` (`app/config.py`); `docker-compose.yml` runs a `redis:8`
   service as a dependency of `api`.
 - **Streaming** is implemented with `agent.astream(..., stream_mode="messages")`
-  in `app/api/routes.py`, forwarding non-empty `chunk.content` as SSE
-  `data:` lines. Tool-call argument deltas are excluded automatically since
-  those chunks have empty `content`.
+  in `app/api/routes.py`, forwarding chunks as SSE `data:` lines. **Only
+  forward `AIMessageChunk` chunks** (`isinstance(message_chunk, AIMessageChunk)`),
+  not just any chunk with non-empty `.content` — `stream_mode="messages"`
+  also yields `ToolMessage` chunks (the tool's raw JSON output), which also
+  have non-empty `.content`; without the isinstance check that raw JSON
+  leaks into the token stream ahead of the model's actual answer. This was
+  a real bug, caught by driving the frontend through a tool-triggering
+  query in stream mode — non-streaming `/chat` was never affected since it
+  only reads `result["messages"][-1]`.
 - **LLM provider**: only OpenAI-compatible via `langchain-openai`
   `ChatOpenAI` is wired up (`OPENAI_API_KEY`, `OPENAI_MODEL`,
   `OPENAI_API_BASE` in `.env`). If another provider is ever needed, swap the
@@ -112,6 +121,14 @@ tests/                 pytest tests; aviationweather.gov calls mocked with respx
   The streaming endpoint opens the span *inside* `event_generator()`, not in
   the route body — the generator outlives the route function's return, so
   opening it outside would close the span before streaming even starts.
+- **Frontend** (`frontend/`) is a separate React + TypeScript (Vite) app,
+  not served by FastAPI — it's a pure API client. It calls same-origin
+  `/api/*` paths always (`src/api.ts`); `vite.config.ts` proxies those to
+  `localhost:8000` in dev, and `frontend/nginx.conf` proxies them to the
+  `api` docker compose service in prod. Don't hardcode a backend URL into
+  the frontend — if it ever needs to call a different-origin backend, add a
+  `VITE_API_BASE_URL` env var read in `src/api.ts`, not a hardcoded string.
+  See `frontend/CLAUDE.md` for frontend-specific conventions.
 
 ## Running things
 
@@ -124,7 +141,11 @@ uvicorn app.main:app --reload
 pytest
 ```
 
-Docker: `docker compose up --build` (reads `.env`).
+Frontend: `cd frontend && npm install && npm run dev` (proxies `/api` to
+`localhost:8000` — run the backend first). See `frontend/README.md`.
+
+Docker: `docker compose up --build` (reads `.env`) — also builds and runs
+the frontend (nginx-served) on `localhost:3000`.
 
 ## Conventions
 

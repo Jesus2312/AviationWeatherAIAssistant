@@ -1,5 +1,8 @@
-"""A minimal async circuit breaker for guarding calls to flaky external
-services (aviationweather.gov, the LLM provider).
+"""A minimal circuit breaker for guarding calls to flaky external services
+(aviationweather.gov, the LLM provider, Langfuse). An async (`CircuitBreaker`
++ `CircuitBreakerTransport`) and a sync (`SyncCircuitBreaker` +
+`SyncCircuitBreakerTransport`) variant are provided, since some SDKs (e.g.
+Langfuse's) make their own calls through an internal sync `httpx.Client`.
 
 Without this, when a dependency goes down every request still waits out the
 full connect/read timeout before failing -- under load that piles up
@@ -12,6 +15,7 @@ seconds have passed, at which point a single trial call is let through
 
 import asyncio
 import logging
+import threading
 import time
 from enum import Enum
 from typing import Awaitable, Callable, TypeVar
@@ -124,3 +128,81 @@ class CircuitBreakerTransport(httpx.AsyncBaseTransport):
 
     async def aclose(self) -> None:
         await self._wrapped.aclose()
+
+
+class SyncCircuitBreaker:
+    """Thread-safe circuit breaker for guarding calls made from sync code
+    (e.g. an SDK's internal `httpx.Client`, invoked from background threads).
+
+    Same state machine as `CircuitBreaker`, but using a `threading.Lock`
+    instead of an `asyncio.Lock` so it works without an event loop.
+    """
+
+    def __init__(self, name: str, failure_threshold: int = 5, reset_timeout: float = 30.0):
+        self.name = name
+        self.failure_threshold = failure_threshold
+        self.reset_timeout = reset_timeout
+        self._state = _State.CLOSED
+        self._failure_count = 0
+        self._opened_at = 0.0
+        self._lock = threading.Lock()
+
+    @property
+    def state(self) -> str:
+        return self._state.value
+
+    def guard(self) -> None:
+        """Raise CircuitBreakerOpenError if calls should be rejected right now."""
+        with self._lock:
+            if self._state == _State.OPEN:
+                if time.monotonic() - self._opened_at >= self.reset_timeout:
+                    self._state = _State.HALF_OPEN
+                    logger.info("Circuit breaker %r half-open: testing recovery.", self.name)
+                else:
+                    raise CircuitBreakerOpenError(self.name)
+
+    def record_success(self) -> None:
+        with self._lock:
+            if self._state != _State.CLOSED:
+                logger.info("Circuit breaker %r closed: recovered.", self.name)
+            self._state = _State.CLOSED
+            self._failure_count = 0
+
+    def record_failure(self) -> None:
+        with self._lock:
+            self._failure_count += 1
+            if self._state == _State.HALF_OPEN or self._failure_count >= self.failure_threshold:
+                if self._state != _State.OPEN:
+                    logger.warning(
+                        "Circuit breaker %r open after %d failure(s); failing fast for %.0fs.",
+                        self.name,
+                        self._failure_count,
+                        self.reset_timeout,
+                    )
+                self._state = _State.OPEN
+                self._opened_at = time.monotonic()
+
+
+class SyncCircuitBreakerTransport(httpx.BaseTransport):
+    """Sync counterpart to `CircuitBreakerTransport`, for an SDK's internal
+    `httpx.Client` (as opposed to our own `httpx.AsyncClient` calls)."""
+
+    def __init__(self, breaker: SyncCircuitBreaker, wrapped: httpx.BaseTransport | None = None):
+        self._breaker = breaker
+        self._wrapped = wrapped or httpx.HTTPTransport()
+
+    def handle_request(self, request: httpx.Request) -> httpx.Response:
+        self._breaker.guard()
+        try:
+            response = self._wrapped.handle_request(request)
+        except Exception:
+            self._breaker.record_failure()
+            raise
+        if response.status_code >= 500:
+            self._breaker.record_failure()
+        else:
+            self._breaker.record_success()
+        return response
+
+    def close(self) -> None:
+        self._wrapped.close()

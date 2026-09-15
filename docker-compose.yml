@@ -11,6 +11,13 @@ services:
       redis:
         condition: service_healthy
 
+  web:
+    build: ./frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      - api
+
   redis:
     # Redis 8+ bundles the RediSearch/RedisJSON modules that
     # langgraph-checkpoint-redis needs to index conversation checkpoints.

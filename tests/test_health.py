@@ -13,4 +13,5 @@ def test_health():
     assert body["circuit_breakers"] == {
         "aviationweather.gov": "closed",
         "llm_provider": "closed",
+        "langfuse": "closed",
     }

@@ -6,6 +6,7 @@ import uuid
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
+from langchain_core.messages import AIMessageChunk
 
 from app.agent import build_agent, trace_request
 from app.circuit_breaker import CircuitBreakerOpenError
@@ -128,9 +129,12 @@ async def chat_stream(request: ChatRequest) -> StreamingResponse:
                     config=config,
                     stream_mode="messages",
                 ):
-                    # Tool-call argument deltas have empty content; only
-                    # forward actual answer text tokens from the model.
-                    if getattr(message_chunk, "content", None):
+                    # stream_mode="messages" yields every message chunk in
+                    # the graph, including ToolMessage chunks carrying the
+                    # tool's raw output -- those also have non-empty
+                    # `.content` and must NOT be forwarded as answer text.
+                    # Only AIMessageChunk is the model's own generated text.
+                    if isinstance(message_chunk, AIMessageChunk) and message_chunk.content:
                         answer_parts.append(message_chunk.content)
                         yield f"data: {json.dumps({'token': message_chunk.content})}\n\n"
             except CircuitBreakerOpenError as e:

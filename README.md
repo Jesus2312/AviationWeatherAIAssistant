@@ -12,6 +12,8 @@ decoding the raw report for the user.
 - `POST /api/chat/stream` — Server-Sent Events streaming chat.
 - LangChain tool-calling agent with `get_metar` / `get_taf` tools.
 - Per-session conversation history (`session_id`), persisted in Redis.
+- A React frontend (`frontend/`) — a chatgpt.com-style chat UI for this API.
+  See [`frontend/README.md`](frontend/README.md).
 
 ## Local setup (Python virtual environment)
 
@@ -68,8 +70,10 @@ curl -N -X POST http://localhost:8000/api/chat/stream \
 docker compose up --build
 ```
 
-This also starts a `redis:8` container that the API depends on for
-conversation memory. The API will be available at `http://localhost:8000`.
+This starts a `redis:8` container the API depends on for conversation
+memory, and a `web` container serving the React frontend (built with nginx)
+on `http://localhost:3000`, proxying its own `/api/*` calls to the `api`
+service. The API itself is available at `http://localhost:8000`.
 Environment variables are read from `.env` (see `.env.example`); when run
 via compose, `REDIS_URL` is overridden to point at the `redis` service.
 

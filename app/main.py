@@ -10,6 +10,7 @@ from app.agent import (
     close_checkpointer,
     close_llm_http_client,
     flush_langfuse,
+    get_langfuse_breaker_state,
     get_llm_breaker_state,
     init_checkpointer,
 )
@@ -69,5 +70,6 @@ async def health() -> dict:
         "circuit_breakers": {
             "aviationweather.gov": get_weather_breaker_state(),
             "llm_provider": get_llm_breaker_state(),
+            "langfuse": get_langfuse_breaker_state(),
         },
     }

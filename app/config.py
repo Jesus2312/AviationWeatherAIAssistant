@@ -21,9 +21,12 @@ class Settings(BaseSettings):
 
     redis_url: str = "redis://localhost:6379"
 
+    # langfuse_base_url is intentionally not declared here: the Langfuse SDK
+    # reads LANGFUSE_BASE_URL straight from the process environment (see
+    # load_dotenv() above), so a Settings field for it would just be dead
+    # code -- nothing in this app ever reads it.
     langfuse_secret_key: str = ""
     langfuse_public_key: str = ""
-    langfuse_base_url: str = "https://cloud.langfuse.com"
 
     # Circuit breaker for calls to aviationweather.gov and the LLM provider:
     # trip open after this many consecutive failures, then fail fast for
