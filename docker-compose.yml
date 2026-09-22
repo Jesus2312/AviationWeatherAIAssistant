@@ -1,6 +1,7 @@
 services:
   api:
     build: .
+    restart: unless-stopped
     ports:
       - "8000:8000"
     env_file:
@@ -10,13 +11,23 @@ services:
     depends_on:
       redis:
         condition: service_healthy
+    healthcheck:
+      # No curl/wget in the python:3.11-slim image, so hit /health with the
+      # stdlib instead of adding a package just for this check.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
   web:
     build: ./frontend
+    restart: unless-stopped
     ports:
       - "3000:80"
     depends_on:
-      - api
+      api:
+        condition: service_healthy
 
   redis:
     # Redis 8+ bundles the RediSearch/RedisJSON modules that
@@ -24,6 +35,7 @@ services:
     # Plain redis:7 (or the -alpine variant without these modules) will not
     # work here.
     image: redis:8
+    restart: unless-stopped
     ports:
       - "6379:6379"
     volumes:
